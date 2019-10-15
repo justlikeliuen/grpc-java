@@ -152,6 +152,7 @@ public class RouteGuideServer {
         int lat = feature.getLocation().getLatitude();
         int lon = feature.getLocation().getLongitude();
         if (lon >= left && lon <= right && lat >= bottom && lat <= top) {
+          // server stream模式多次调用onNext方法即可
           responseObserver.onNext(feature);
         }
       }
@@ -162,11 +163,17 @@ public class RouteGuideServer {
      * Gets a stream of points, and responds with statistics about the "trip": number of points,
      * number of known features visited, total distance traveled, and total time spent.
      *
+     * rpc RecordRoute(stream Point) returns (RouteSummary) {} 这是proto定义的RecordRoute的函数签名
+     * 在stream client这种模式下, java代码的入参和返回值与传统方法有点不一致.这里可以配合client端的代码来一起理解.
+     * 因为grpc接口整体采用的是observer的模式 : client 与 server 互为observer !
+     * client和server是一个相互回调的过程.
+     *
      * @param responseObserver an observer to receive the response summary.
      * @return an observer to receive the requested route points.
      */
     @Override
     public StreamObserver<Point> recordRoute(final StreamObserver<RouteSummary> responseObserver) {
+      // 这里的 StreamObserver<Point> 就是requestObserver
       return new StreamObserver<Point>() {
         int pointCount;
         int featureCount;
@@ -174,6 +181,8 @@ public class RouteGuideServer {
         Point previous;
         final long startTime = System.nanoTime();
 
+        // 这里就是client里requestObserver.onNext(point);的回调处理
+        // 这种client stream的形式,就是要在server端定义好当requestObserver调用方法时的各种执行逻辑
         @Override
         public void onNext(Point point) {
           pointCount++;
@@ -196,6 +205,7 @@ public class RouteGuideServer {
         @Override
         public void onCompleted() {
           long seconds = NANOSECONDS.toSeconds(System.nanoTime() - startTime);
+          //这里 requestObserver调用completed方法的时候,控制responseObserver的回调
           responseObserver.onNext(RouteSummary.newBuilder().setPointCount(pointCount)
               .setFeatureCount(featureCount).setDistance(distance)
               .setElapsedTime((int) seconds).build());
@@ -216,10 +226,12 @@ public class RouteGuideServer {
       return new StreamObserver<RouteNote>() {
         @Override
         public void onNext(RouteNote note) {
-          List<RouteNote> notes = getOrCreateNotes(note.getLocation());
+          List<RouteNote> notes = getOrCreateNotes(note.getLocation(), note);
 
           // Respond with all previous notes at this location.
-          for (RouteNote prevNote : notes.toArray(new RouteNote[0])) {
+//          for (RouteNote prevNote : notes.toArray(new RouteNote[0])) {
+          for (RouteNote prevNote : notes) {
+            // 和 client stream唯一不同的就是这里了, 需要client和server相互回调next
             responseObserver.onNext(prevNote);
           }
 
@@ -242,10 +254,19 @@ public class RouteGuideServer {
     /**
      * Get the notes list for the given location. If missing, create it.
      */
-    private List<RouteNote> getOrCreateNotes(Point location) {
-      List<RouteNote> notes = Collections.synchronizedList(new ArrayList<RouteNote>());
-      List<RouteNote> prevNotes = routeNotes.putIfAbsent(location, notes);
-      return prevNotes != null ? prevNotes : notes;
+    private List<RouteNote> getOrCreateNotes(Point location, final RouteNote note) {
+      if(routeNotes.get(location) == null){
+        List<RouteNote> notes = Collections.synchronizedList(new ArrayList<RouteNote>());
+        notes.add(note);
+        routeNotes.putIfAbsent(location,notes);
+        return notes;
+      } else {
+        List<RouteNote> prevNotes = routeNotes.computeIfPresent(location, (point,list) -> {
+          list.add(note);
+          return list;
+        });
+        return prevNotes;
+      }
     }
 
     /**

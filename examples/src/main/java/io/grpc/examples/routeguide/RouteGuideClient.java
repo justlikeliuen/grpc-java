@@ -41,7 +41,9 @@ public class RouteGuideClient {
   private static final Logger logger = Logger.getLogger(RouteGuideClient.class.getName());
 
   private final ManagedChannel channel;
+  // simple 和 server stream 模式使用blockingStub
   private final RouteGuideBlockingStub blockingStub;
+  // client stream和Bi-directional 使用asyncStub
   private final RouteGuideStub asyncStub;
 
   private Random random = new Random();
@@ -111,6 +113,7 @@ public class RouteGuideClient {
     Iterator<Feature> features;
     try {
       features = blockingStub.listFeatures(request);
+      // 这里应该是在   server调用responseObserver.onCompleted();以后hasNext就是false了
       for (int i = 1; features.hasNext(); i++) {
         Feature feature = features.next();
         info("Result #" + i + ": {0}", feature);
@@ -133,7 +136,9 @@ public class RouteGuideClient {
    */
   public void recordRoute(List<Feature> features, int numPoints) throws InterruptedException {
     info("*** RecordRoute");
+    // 使用CountDownLatch hold住线程,保证一次调用的完整性.保证response调用完completed方法以后调用才算结束
     final CountDownLatch finishLatch = new CountDownLatch(1);
+    // 这种client stream模式需要定义responseObserver的方法,跟server端刚刚好相反.
     StreamObserver<RouteSummary> responseObserver = new StreamObserver<RouteSummary>() {
       @Override
       public void onNext(RouteSummary summary) {
@@ -160,7 +165,8 @@ public class RouteGuideClient {
         finishLatch.countDown();
       }
     };
-
+    // 这里就是典型的观察者模式(回调),客户端调用接口传入的是responseObserver. responseServer的回调函数都已经定义好了
+    // 返回值是requestObserver
     StreamObserver<Point> requestObserver = asyncStub.recordRoute(responseObserver);
     try {
       // Send numPoints points randomly selected from the features list.
@@ -198,6 +204,7 @@ public class RouteGuideClient {
    */
   public CountDownLatch routeChat() {
     info("*** RouteChat");
+    // 和 client stream作用相同
     final CountDownLatch finishLatch = new CountDownLatch(1);
     StreamObserver<RouteNote> requestObserver =
         asyncStub.routeChat(new StreamObserver<RouteNote>() {
@@ -234,6 +241,7 @@ public class RouteGuideClient {
       for (RouteNote request : requests) {
         info("Sending message \"{0}\" at {1}, {2}", request.getMessage(), request.getLocation()
             .getLatitude(), request.getLocation().getLongitude());
+        // server 端会回调responseObserver.onNext方法
         requestObserver.onNext(request);
       }
     } catch (RuntimeException e) {
@@ -242,6 +250,7 @@ public class RouteGuideClient {
       throw e;
     }
     // Mark the end of requests
+    // 相互回调completed
     requestObserver.onCompleted();
 
     // return the latch while receiving happens asynchronously
