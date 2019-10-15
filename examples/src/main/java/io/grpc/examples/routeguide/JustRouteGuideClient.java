@@ -1,10 +1,10 @@
 package io.grpc.examples.routeguide;
 
 /**
- * todo 观察者
+ * todo impl client
  * @author: liuen
  * @date: 2019-10-15
  * @since:
  **/
-public class Observer {
+public class JustRouteGuideClient {
 }
